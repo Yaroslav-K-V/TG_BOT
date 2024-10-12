@@ -1,23 +1,22 @@
-from flask import Flask
 import threading
+import time
+from flask import Flask
 import subprocess
 
 app = Flask(__name__)
 
-# Запуск main_bot.py у фоновому режимі
-def start_bot():
-    subprocess.Popen(['python', 'main_bot.py'])
+# Запускаємо основний бот у окремому потоці
+def run_bot():
+    subprocess.Popen(["python", "main_bot.py"])
 
-# Роут для пінгу
 @app.route('/')
-def ping():
-    return "Bot is running!"
+def home():
+    return "Bot is running!", 200
 
 if __name__ == "__main__":
-    # Запускаємо бота в окремому потоці
-    bot_thread = threading.Thread(target=start_bot)
+    # Запускаємо бота в окремому потоці, щоб він працював паралельно з вебсервером
+    bot_thread = threading.Thread(target=run_bot)
     bot_thread.start()
-
-    # Запускаємо Flask сервер
+    
+    # Запускаємо вебсервер
     app.run(host="0.0.0.0", port=5000)
-
