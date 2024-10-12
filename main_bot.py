@@ -42,7 +42,10 @@ async def schedule_posts():
     schedule.every().day.at("23:00").do(lambda: asyncio.create_task(post_weather()))
     
     """Test time"""
-    schedule.every().day.at("20:37").do(lambda: asyncio.create_task(post_weather()))
+    schedule.every().day.at("20:45").do(lambda: asyncio.create_task(post_weather()))
+    schedule.every().day.at("20:50").do(lambda: asyncio.create_task(post_weather()))
+    schedule.every().day.at("20:55").do(lambda: asyncio.create_task(post_weather()))
+    schedule.every().day.at("21:00").do(lambda: asyncio.create_task(post_weather()))
 
     while True:
         schedule.run_pending()
