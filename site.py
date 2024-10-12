@@ -1,20 +1,17 @@
 from flask import Flask
 import threading
-import time
-import telebot  # ваш телеграм бот
+import subprocess
 
 app = Flask(__name__)
 
-# Запуск бота у фоновому режимі
+# Запуск main_bot.py у фоновому режимі
 def start_bot():
-    bot = telebot.TeleBot("YOUR_TOKEN_HERE")
-    # ваш код бота
-    bot.infinity_polling()
+    subprocess.Popen(['python', 'main_bot.py'])
 
 # Роут для пінгу
 @app.route('/')
 def ping():
-    return "Bot is running"
+    return "Bot is running!"
 
 if __name__ == "__main__":
     # Запускаємо бота в окремому потоці
@@ -23,3 +20,4 @@ if __name__ == "__main__":
 
     # Запускаємо Flask сервер
     app.run(host="0.0.0.0", port=5000)
+
