@@ -1,7 +1,7 @@
 import random
 
 BOT_TOKEN = "6950127488:AAEhLvKr6OjfT7xf1DsCZaSCOr-x1phYa-c"
-CHANNEL_ID = "@VirtuaCountryTropico"
+CHANNEL_ID = "@VelicoslaviayNews"
 
 # Погодні дані для Бару
 BARU_WEATHER = {
