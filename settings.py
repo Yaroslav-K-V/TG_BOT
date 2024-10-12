@@ -1,6 +1,5 @@
 import random
 
-BOT_TOKEN = "6950127488:AAEhLvKr6OjfT7xf1DsCZaSCOr-x1phYa-c"
 CHANNEL_ID = "@VirtuaCountryTropico"
 
 # Погодні дані для Бару
