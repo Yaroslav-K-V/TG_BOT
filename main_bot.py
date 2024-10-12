@@ -32,11 +32,15 @@ async def post_weather():
 async def schedule_posts():
     """Schedule regular weather posts."""
     import schedule
+    schedule.every().day.at("00:00").do(lambda: asyncio.create_task(post_weather()))
+    schedule.every().day.at("06:00").do(lambda: asyncio.create_task(post_weather()))
     schedule.every().day.at("09:00").do(lambda: asyncio.create_task(post_weather()))
     schedule.every().day.at("12:00").do(lambda: asyncio.create_task(post_weather()))
     schedule.every().day.at("15:00").do(lambda: asyncio.create_task(post_weather()))
     schedule.every().day.at("17:00").do(lambda: asyncio.create_task(post_weather()))
     schedule.every().day.at("20:00").do(lambda: asyncio.create_task(post_weather()))
+    schedule.every().day.at("23:00").do(lambda: asyncio.create_task(post_weather()))
+    
     """Test time"""
     schedule.every().day.at("20:37").do(lambda: asyncio.create_task(post_weather()))
 
