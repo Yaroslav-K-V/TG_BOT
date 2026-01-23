@@ -1,68 +1,364 @@
 import logging
-import requests
-from telegram.ext import Application
-import asyncio
-import weather_posts
-import settings  # Weather settings
+from datetime import datetime, timedelta, date
 
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ConversationHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+)
+
+import settings
+
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
+# Conversation states
+WAITING_FOR_TEXT = 0
+WAITING_FOR_TIME = 1
+WAITING_FOR_FREQUENCY = 2
+WAITING_FOR_DELETE = 3
 
-def send_message_via_api(message: str):
-    """Send message through Telegram API."""
-    BASE_URL = f"https://api.telegram.org/bot{settings.BOT_TOKEN}/sendMessage"
-    params = {
-        "chat_id": settings.CHANNEL_ID,
-        "text": message
-    }
-    response = requests.get(BASE_URL, params=params)
-    if response.status_code == 200:
-        logging.info(f"Повідомлення відправлено: {message}")
+# Store scheduled posts: {job_name: {"text": str, "time": str, "user_id": int, "type": str}}
+scheduled_posts = {}
+
+# Track last interaction date per user: {user_id: date}
+user_last_interaction = {}
+
+
+def get_daily_greeting() -> str:
+    """Get greeting based on time of day."""
+    hour = datetime.now().hour
+    if 5 <= hour < 12:
+        return "Good morning"
+    elif 12 <= hour < 18:
+        return "Good afternoon"
     else:
-        logging.error(f"Помилка відправки повідомлення: {response.text}")
+        return "Good evening"
 
 
-async def post_weather():
-    """Async function to post the weather."""
-    post_text = weather_posts.post_weather_message()  # Викликаємо функцію, яка генерує текст повідомлення
-    send_message_via_api(post_text)
+async def check_daily_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Check if user should receive daily welcome. Returns True if welcome was sent."""
+    if not update.effective_user:
+        return False
+
+    user_id = update.effective_user.id
+    user_name = update.effective_user.username or update.effective_user.first_name or "there"
+    today = date.today()
+
+    last_date = user_last_interaction.get(user_id)
+    user_last_interaction[user_id] = today
+
+    if last_date != today:
+        greeting = get_daily_greeting()
+        await update.message.reply_text(
+            f"{greeting}, {user_name}! Welcome back!\n\n"
+            f"You have {count_user_posts(user_id)} scheduled post(s).\n"
+            f"Use /schedule to create a new one."
+        )
+        return True
+    return False
 
 
-async def schedule_posts():
-    """Schedule regular weather posts."""
-    import schedule
-    schedule.every().day.at("00:00").do(lambda: asyncio.create_task(post_weather()))
-    schedule.every().day.at("06:00").do(lambda: asyncio.create_task(post_weather()))
-    schedule.every().day.at("09:00").do(lambda: asyncio.create_task(post_weather()))
-    schedule.every().day.at("12:00").do(lambda: asyncio.create_task(post_weather()))
-    schedule.every().day.at("15:00").do(lambda: asyncio.create_task(post_weather()))
-    schedule.every().day.at("17:00").do(lambda: asyncio.create_task(post_weather()))
-    schedule.every().day.at("20:00").do(lambda: asyncio.create_task(post_weather()))
-    schedule.every().day.at("23:00").do(lambda: asyncio.create_task(post_weather()))
-    
-    """Test time"""
-    schedule.every().day.at("20:45").do(lambda: asyncio.create_task(post_weather()))
-    schedule.every().day.at("20:50").do(lambda: asyncio.create_task(post_weather()))
-    schedule.every().day.at("20:55").do(lambda: asyncio.create_task(post_weather()))
-    schedule.every().day.at("21:00").do(lambda: asyncio.create_task(post_weather()))
-
-    while True:
-        schedule.run_pending()
-        await asyncio.sleep(5)
+def count_user_posts(user_id: int) -> int:
+    """Count scheduled posts for a user."""
+    return sum(1 for data in scheduled_posts.values() if data['user_id'] == user_id)
 
 
-async def main():
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send welcome message."""
+    await check_daily_welcome(update, context)
+    await update.message.reply_text(
+        "I can schedule posts for you.\n\n"
+        "Commands:\n"
+        "/schedule - Schedule a new post\n"
+        "/list - View scheduled posts\n"
+        "/delete - Delete a scheduled post\n"
+        "/cancel - Cancel current operation"
+    )
+
+
+async def schedule_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start the scheduling process."""
+    await check_daily_welcome(update, context)
+    await update.message.reply_text(
+        "Let's schedule a post!\n\n"
+        "Please enter the text you want to post:"
+    )
+    return WAITING_FOR_TEXT
+
+
+async def receive_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive the post text and ask for time."""
+    context.user_data['post_text'] = update.message.text
+    await update.message.reply_text(
+        "Got it! Now enter the time to post.\n\n"
+        "Format: HH:MM (24-hour format)\n"
+        "Example: 14:30"
+    )
+    return WAITING_FOR_TIME
+
+
+async def receive_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive the time and ask for frequency."""
+    time_str = update.message.text.strip()
+
+    # Validate time format
+    try:
+        hour, minute = map(int, time_str.split(':'))
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ValueError()
+    except (ValueError, AttributeError):
+        await update.message.reply_text(
+            "Invalid time format. Please use HH:MM (e.g., 14:30)"
+        )
+        return WAITING_FOR_TIME
+
+    context.user_data['post_time'] = time_str
+
+    keyboard = [["Once", "Daily"]]
+    await update.message.reply_text(
+        "How often should this post be sent?",
+        reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+    )
+    return WAITING_FOR_FREQUENCY
+
+
+async def receive_frequency(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive frequency and schedule the post."""
+    frequency = update.message.text.strip().lower()
+
+    if frequency not in ['once', 'daily']:
+        keyboard = [["Once", "Daily"]]
+        await update.message.reply_text(
+            "Please choose 'Once' or 'Daily'",
+            reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+        )
+        return WAITING_FOR_FREQUENCY
+
+    post_text = context.user_data.get('post_text', '')
+    time_str = context.user_data.get('post_time', '')
+    user_id = update.effective_user.id
+
+    # Create unique job name
+    job_name = f"post_{user_id}_{datetime.now().timestamp()}"
+    post_time = datetime.strptime(time_str, "%H:%M").time()
+
+    if frequency == 'daily':
+        # Schedule daily
+        context.job_queue.run_daily(
+            send_scheduled_post,
+            time=post_time,
+            data={'text': post_text, 'chat_id': settings.CHANNEL_ID, 'job_name': job_name},
+            name=job_name,
+        )
+        freq_display = "Daily"
+    else:
+        # Schedule once - calculate when to run
+        now = datetime.now()
+        target = now.replace(hour=post_time.hour, minute=post_time.minute, second=0, microsecond=0)
+        if target <= now:
+            target += timedelta(days=1)
+
+        context.job_queue.run_once(
+            send_scheduled_post_once,
+            when=target,
+            data={'text': post_text, 'chat_id': settings.CHANNEL_ID, 'job_name': job_name},
+            name=job_name,
+        )
+        freq_display = "Once"
+
+    # Store post info
+    scheduled_posts[job_name] = {
+        'text': post_text[:50] + '...' if len(post_text) > 50 else post_text,
+        'time': time_str,
+        'user_id': user_id,
+        'type': freq_display,
+    }
+
+    await update.message.reply_text(
+        f"Post scheduled!\n\n"
+        f"Time: {time_str} ({freq_display})\n"
+        f"Text: {post_text[:100]}{'...' if len(post_text) > 100 else ''}\n\n"
+        f"The post will be sent to {settings.CHANNEL_ID}",
+        reply_markup=ReplyKeyboardRemove()
+    )
+
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+async def send_scheduled_post(context: ContextTypes.DEFAULT_TYPE):
+    """Send the scheduled post to the channel (daily)."""
+    job_data = context.job.data
+    try:
+        await context.bot.send_message(
+            chat_id=job_data['chat_id'],
+            text=job_data['text']
+        )
+        logger.info(f"Scheduled post sent: {job_data['text'][:50]}...")
+    except Exception as e:
+        logger.error(f"Failed to send scheduled post: {e}")
+
+
+async def send_scheduled_post_once(context: ContextTypes.DEFAULT_TYPE):
+    """Send the scheduled post to the channel (once) and remove from list."""
+    job_data = context.job.data
+    try:
+        await context.bot.send_message(
+            chat_id=job_data['chat_id'],
+            text=job_data['text']
+        )
+        logger.info(f"One-time post sent: {job_data['text'][:50]}...")
+        # Remove from scheduled posts
+        job_name = job_data.get('job_name')
+        if job_name and job_name in scheduled_posts:
+            del scheduled_posts[job_name]
+    except Exception as e:
+        logger.error(f"Failed to send scheduled post: {e}")
+
+
+async def list_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """List all scheduled posts."""
+    await check_daily_welcome(update, context)
+
+    user_id = update.effective_user.id
+
+    user_posts = [
+        (name, data) for name, data in scheduled_posts.items()
+        if data['user_id'] == user_id
+    ]
+
+    if not user_posts:
+        await update.message.reply_text("You have no scheduled posts.")
+        return
+
+    message = "Your scheduled posts:\n\n"
+    for i, (name, data) in enumerate(user_posts, 1):
+        message += f"{i}. [{data['time']} - {data['type']}] {data['text']}\n"
+
+    await update.message.reply_text(message)
+
+
+async def delete_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start the delete process."""
+    await check_daily_welcome(update, context)
+
+    user_id = update.effective_user.id
+
+    user_posts = [
+        (name, data) for name, data in scheduled_posts.items()
+        if data['user_id'] == user_id
+    ]
+
+    if not user_posts:
+        await update.message.reply_text("You have no scheduled posts to delete.")
+        return ConversationHandler.END
+
+    context.user_data['user_posts'] = user_posts
+
+    message = "Which post do you want to delete?\n\n"
+    for i, (name, data) in enumerate(user_posts, 1):
+        message += f"{i}. [{data['time']} - {data['type']}] {data['text']}\n"
+    message += "\nEnter the number to delete (or /cancel):"
+
+    await update.message.reply_text(message)
+    return WAITING_FOR_DELETE
+
+
+async def receive_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Delete the selected post."""
+    user_posts = context.user_data.get('user_posts', [])
+
+    try:
+        num = int(update.message.text.strip())
+        if num < 1 or num > len(user_posts):
+            raise ValueError()
+    except ValueError:
+        await update.message.reply_text(
+            f"Please enter a number between 1 and {len(user_posts)}"
+        )
+        return WAITING_FOR_DELETE
+
+    job_name, data = user_posts[num - 1]
+
+    # Remove the job from job queue
+    jobs = context.job_queue.get_jobs_by_name(job_name)
+    for job in jobs:
+        job.schedule_removal()
+
+    # Remove from stored posts
+    if job_name in scheduled_posts:
+        del scheduled_posts[job_name]
+
+    await update.message.reply_text(
+        f"Deleted post #{num}: [{data['time']}] {data['text']}"
+    )
+
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancel the current operation."""
+    context.user_data.clear()
+    await update.message.reply_text(
+        "Operation cancelled.",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    return ConversationHandler.END
+
+
+def main():
+    """Run the bot."""
+    if not settings.BOT_TOKEN:
+        logger.error("BOT_TOKEN not set!")
+        return
+
     application = Application.builder().token(settings.BOT_TOKEN).build()
 
-    # Start the weather posting schedule
-    await schedule_posts()
+    # Conversation handler for scheduling
+    schedule_handler = ConversationHandler(
+        entry_points=[CommandHandler('schedule', schedule_start)],
+        states={
+            WAITING_FOR_TEXT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_text)
+            ],
+            WAITING_FOR_TIME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_time)
+            ],
+            WAITING_FOR_FREQUENCY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_frequency)
+            ],
+        },
+        fallbacks=[CommandHandler('cancel', cancel)],
+    )
 
-    # Run the bot
-    await application.run_polling()
+    # Conversation handler for deleting
+    delete_handler = ConversationHandler(
+        entry_points=[CommandHandler('delete', delete_start)],
+        states={
+            WAITING_FOR_DELETE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_delete)
+            ],
+        },
+        fallbacks=[CommandHandler('cancel', cancel)],
+    )
+
+    application.add_handler(CommandHandler('start', start))
+    application.add_handler(CommandHandler('list', list_posts))
+    application.add_handler(schedule_handler)
+    application.add_handler(delete_handler)
+
+    logger.info("Bot started!")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == '__main__':
-    import asyncio
-
-    asyncio.run(main())
+    main()
