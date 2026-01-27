@@ -1,7 +1,9 @@
 import logging
 from datetime import datetime, timedelta, date
+from typing import Any
 
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram.error import TelegramError
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -13,9 +15,11 @@ from telegram.ext import (
 
 import settings
 
+settings.validate_config()
+
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=getattr(logging, settings.LOG_LEVEL, logging.INFO)
 )
 logger = logging.getLogger(__name__)
 
@@ -25,11 +29,13 @@ WAITING_FOR_TIME = 1
 WAITING_FOR_FREQUENCY = 2
 WAITING_FOR_DELETE = 3
 
-# Store scheduled posts: {job_name: {"text": str, "time": str, "user_id": int, "type": str}}
-scheduled_posts = {}
+# Display limits
+MAX_PREVIEW_LENGTH = 50
+MAX_DISPLAY_LENGTH = 100
+MAX_POST_LENGTH = 4096
 
-# Track last interaction date per user: {user_id: date}
-user_last_interaction = {}
+scheduled_posts: dict[str, dict[str, Any]] = {}
+user_last_interaction: dict[int, date] = {}
 
 
 def get_daily_greeting() -> str:
@@ -43,9 +49,19 @@ def get_daily_greeting() -> str:
         return "Good evening"
 
 
+def truncate(text: str, length: int) -> str:
+    """Truncate text to given length with ellipsis."""
+    return text[:length] + '...' if len(text) > length else text
+
+
+def count_user_posts(user_id: int) -> int:
+    """Count scheduled posts for a user."""
+    return sum(1 for data in scheduled_posts.values() if data['user_id'] == user_id)
+
+
 async def check_daily_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """Check if user should receive daily welcome. Returns True if welcome was sent."""
-    if not update.effective_user:
+    if not update.effective_user or not update.message:
         return False
 
     user_id = update.effective_user.id
@@ -64,11 +80,6 @@ async def check_daily_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return True
     return False
-
-
-def count_user_posts(user_id: int) -> int:
-    """Count scheduled posts for a user."""
-    return sum(1 for data in scheduled_posts.values() if data['user_id'] == user_id)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -96,7 +107,20 @@ async def schedule_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def receive_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Receive the post text and ask for time."""
-    context.user_data['post_text'] = update.message.text
+    text = update.message.text.strip()
+
+    if not text:
+        await update.message.reply_text("Text cannot be empty. Please enter the post text:")
+        return WAITING_FOR_TEXT
+
+    if len(text) > MAX_POST_LENGTH:
+        await update.message.reply_text(
+            f"Text is too long ({len(text)} chars). "
+            f"Telegram limit is {MAX_POST_LENGTH} characters. Please shorten it:"
+        )
+        return WAITING_FOR_TEXT
+
+    context.user_data['post_text'] = text
     await update.message.reply_text(
         "Got it! Now enter the time to post.\n\n"
         "Format: HH:MM (24-hour format)\n"
@@ -109,7 +133,6 @@ async def receive_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Receive the time and ask for frequency."""
     time_str = update.message.text.strip()
 
-    # Validate time format
     try:
         hour, minute = map(int, time_str.split(':'))
         if not (0 <= hour <= 23 and 0 <= minute <= 59):
@@ -146,12 +169,10 @@ async def receive_frequency(update: Update, context: ContextTypes.DEFAULT_TYPE):
     time_str = context.user_data.get('post_time', '')
     user_id = update.effective_user.id
 
-    # Create unique job name
     job_name = f"post_{user_id}_{datetime.now().timestamp()}"
     post_time = datetime.strptime(time_str, "%H:%M").time()
 
     if frequency == 'daily':
-        # Schedule daily
         context.job_queue.run_daily(
             send_scheduled_post,
             time=post_time,
@@ -160,7 +181,6 @@ async def receive_frequency(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         freq_display = "Daily"
     else:
-        # Schedule once - calculate when to run
         now = datetime.now()
         target = now.replace(hour=post_time.hour, minute=post_time.minute, second=0, microsecond=0)
         if target <= now:
@@ -174,18 +194,19 @@ async def receive_frequency(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         freq_display = "Once"
 
-    # Store post info
     scheduled_posts[job_name] = {
-        'text': post_text[:50] + '...' if len(post_text) > 50 else post_text,
+        'text': truncate(post_text, MAX_PREVIEW_LENGTH),
         'time': time_str,
         'user_id': user_id,
         'type': freq_display,
     }
 
+    logger.info(f"Post scheduled by user {user_id}: [{time_str}, {freq_display}]")
+
     await update.message.reply_text(
         f"Post scheduled!\n\n"
         f"Time: {time_str} ({freq_display})\n"
-        f"Text: {post_text[:100]}{'...' if len(post_text) > 100 else ''}\n\n"
+        f"Text: {truncate(post_text, MAX_DISPLAY_LENGTH)}\n\n"
         f"The post will be sent to {settings.CHANNEL_ID}",
         reply_markup=ReplyKeyboardRemove()
     )
@@ -203,8 +224,10 @@ async def send_scheduled_post(context: ContextTypes.DEFAULT_TYPE):
             text=job_data['text']
         )
         logger.info(f"Scheduled post sent: {job_data['text'][:50]}...")
+    except TelegramError as e:
+        logger.error(f"Telegram error sending post: {e}")
     except Exception as e:
-        logger.error(f"Failed to send scheduled post: {e}")
+        logger.error(f"Unexpected error sending post: {e}")
 
 
 async def send_scheduled_post_once(context: ContextTypes.DEFAULT_TYPE):
@@ -216,12 +239,13 @@ async def send_scheduled_post_once(context: ContextTypes.DEFAULT_TYPE):
             text=job_data['text']
         )
         logger.info(f"One-time post sent: {job_data['text'][:50]}...")
-        # Remove from scheduled posts
         job_name = job_data.get('job_name')
         if job_name and job_name in scheduled_posts:
             del scheduled_posts[job_name]
+    except TelegramError as e:
+        logger.error(f"Telegram error sending one-time post: {e}")
     except Exception as e:
-        logger.error(f"Failed to send scheduled post: {e}")
+        logger.error(f"Unexpected error sending one-time post: {e}")
 
 
 async def list_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -288,14 +312,14 @@ async def receive_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     job_name, data = user_posts[num - 1]
 
-    # Remove the job from job queue
     jobs = context.job_queue.get_jobs_by_name(job_name)
     for job in jobs:
         job.schedule_removal()
 
-    # Remove from stored posts
     if job_name in scheduled_posts:
         del scheduled_posts[job_name]
+
+    logger.info(f"Post deleted by user {update.effective_user.id}: {job_name}")
 
     await update.message.reply_text(
         f"Deleted post #{num}: [{data['time']}] {data['text']}"
@@ -317,13 +341,8 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Run the bot."""
-    if not settings.BOT_TOKEN:
-        logger.error("BOT_TOKEN not set!")
-        return
-
     application = Application.builder().token(settings.BOT_TOKEN).build()
 
-    # Conversation handler for scheduling
     schedule_handler = ConversationHandler(
         entry_points=[CommandHandler('schedule', schedule_start)],
         states={
@@ -340,7 +359,6 @@ def main():
         fallbacks=[CommandHandler('cancel', cancel)],
     )
 
-    # Conversation handler for deleting
     delete_handler = ConversationHandler(
         entry_points=[CommandHandler('delete', delete_start)],
         states={
