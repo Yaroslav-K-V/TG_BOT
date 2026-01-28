@@ -95,11 +95,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+def get_target_chat(update: Update) -> tuple[int | str, str]:
+    """Get the target chat for posting. Returns (chat_id, display_name)."""
+    chat = update.effective_chat
+    if chat.type in ("group", "supergroup"):
+        return chat.id, chat.title or str(chat.id)
+    return settings.CHANNEL_ID, str(settings.CHANNEL_ID)
+
+
 async def schedule_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start the scheduling process."""
     await check_daily_welcome(update, context)
+
+    chat_id, chat_name = get_target_chat(update)
+    context.user_data['target_chat_id'] = chat_id
+    context.user_data['target_chat_name'] = chat_name
+
     await update.message.reply_text(
-        "Let's schedule a post!\n\n"
+        f"Let's schedule a post for {chat_name}!\n\n"
         "Please enter the text you want to post:"
     )
     return WAITING_FOR_TEXT
@@ -167,16 +180,19 @@ async def receive_frequency(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     post_text = context.user_data.get('post_text', '')
     time_str = context.user_data.get('post_time', '')
+    target_chat_id = context.user_data.get('target_chat_id', settings.CHANNEL_ID)
+    target_chat_name = context.user_data.get('target_chat_name', str(settings.CHANNEL_ID))
     user_id = update.effective_user.id
 
     job_name = f"post_{user_id}_{datetime.now().timestamp()}"
     post_time = datetime.strptime(time_str, "%H:%M").time()
+    job_data = {'text': post_text, 'chat_id': target_chat_id, 'job_name': job_name}
 
     if frequency == 'daily':
         context.job_queue.run_daily(
             send_scheduled_post,
             time=post_time,
-            data={'text': post_text, 'chat_id': settings.CHANNEL_ID, 'job_name': job_name},
+            data=job_data,
             name=job_name,
         )
         freq_display = "Daily"
@@ -189,7 +205,7 @@ async def receive_frequency(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.job_queue.run_once(
             send_scheduled_post_once,
             when=target,
-            data={'text': post_text, 'chat_id': settings.CHANNEL_ID, 'job_name': job_name},
+            data=job_data,
             name=job_name,
         )
         freq_display = "Once"
@@ -199,15 +215,16 @@ async def receive_frequency(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'time': time_str,
         'user_id': user_id,
         'type': freq_display,
+        'target': target_chat_name,
     }
 
-    logger.info(f"Post scheduled by user {user_id}: [{time_str}, {freq_display}]")
+    logger.info(f"Post scheduled by user {user_id}: [{time_str}, {freq_display}] -> {target_chat_name}")
 
     await update.message.reply_text(
         f"Post scheduled!\n\n"
         f"Time: {time_str} ({freq_display})\n"
         f"Text: {truncate(post_text, MAX_DISPLAY_LENGTH)}\n\n"
-        f"The post will be sent to {settings.CHANNEL_ID}",
+        f"The post will be sent to {target_chat_name}",
         reply_markup=ReplyKeyboardRemove()
     )
 
@@ -265,7 +282,8 @@ async def list_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     message = "Your scheduled posts:\n\n"
     for i, (name, data) in enumerate(user_posts, 1):
-        message += f"{i}. [{data['time']} - {data['type']}] {data['text']}\n"
+        target = data.get('target', settings.CHANNEL_ID)
+        message += f"{i}. [{data['time']} - {data['type']}] ({target}) {data['text']}\n"
 
     await update.message.reply_text(message)
 
@@ -289,7 +307,8 @@ async def delete_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     message = "Which post do you want to delete?\n\n"
     for i, (name, data) in enumerate(user_posts, 1):
-        message += f"{i}. [{data['time']} - {data['type']}] {data['text']}\n"
+        target = data.get('target', settings.CHANNEL_ID)
+        message += f"{i}. [{data['time']} - {data['type']}] ({target}) {data['text']}\n"
     message += "\nEnter the number to delete (or /cancel):"
 
     await update.message.reply_text(message)
