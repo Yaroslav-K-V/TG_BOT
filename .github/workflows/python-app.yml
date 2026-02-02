@@ -18,6 +18,28 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
 
+    - name: Check for sensitive data
+      run: |
+        echo "Scanning for sensitive data..."
+        PATTERNS=(
+          'bot[0-9]+:[A-Za-z0-9_-]{35}'
+          'sk-[A-Za-z0-9]{48}'
+          'ghp_[A-Za-z0-9]{36}'
+          'AKIA[0-9A-Z]{16}'
+        )
+        FOUND=0
+        for pattern in "${PATTERNS[@]}"; do
+          if grep -rE "$pattern" --include="*.py" --include="*.yml" --include="*.yaml" --include="*.json" --include="*.md" . 2>/dev/null | grep -v ".env.example"; then
+            echo "ERROR: Sensitive data pattern found: $pattern"
+            FOUND=1
+          fi
+        done
+        if [ $FOUND -eq 1 ]; then
+          echo "Please remove sensitive data before pushing!"
+          exit 1
+        fi
+        echo "No sensitive data found."
+
     - name: Setup Python
       uses: actions/setup-python@v5
       with:
