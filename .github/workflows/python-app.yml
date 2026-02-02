@@ -1,0 +1,40 @@
+name: Python Telegram Bot CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      BOT_TOKEN: dummy_token
+      CHANNEL_ID: dummy_channel
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Check syntax
+      run: |
+        python -m compileall .
+
+    - name: Import main bot
+      run: |
+        python - <<EOF
+        import main_bot
+        print("main_bot imported successfully")
+        EOF
