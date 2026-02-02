@@ -1,6 +1,8 @@
 import logging
-from datetime import datetime, timedelta, date
+import re
+from datetime import datetime, timedelta, date, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.error import TelegramError
@@ -11,16 +13,46 @@ from telegram.ext import (
     MessageHandler,
     filters,
     ContextTypes,
+    Defaults,
 )
 
 import settings
 
 settings.validate_config()
 
+
+class TokenFilter(logging.Filter):
+    """Filter to mask bot tokens in log messages."""
+    TOKEN_PATTERN = re.compile(r'bot\d+:[A-Za-z0-9_-]+')
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        # Mask in message
+        if record.msg:
+            record.msg = self.TOKEN_PATTERN.sub('bot***:***', str(record.msg))
+        # Mask in args (httpx uses this)
+        if record.args:
+            record.args = tuple(
+                self.TOKEN_PATTERN.sub('bot***:***', str(arg)) if isinstance(arg, str) else arg
+                for arg in record.args
+            )
+        return True
+
+
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=getattr(logging, settings.LOG_LEVEL, logging.INFO)
 )
+
+# Mask tokens in all loggers (especially httpx)
+for handler in logging.root.handlers:
+    handler.addFilter(TokenFilter())
+
+# Reduce httpx verbosity (optional: change to WARNING to hide all HTTP logs)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
+# Enable apscheduler debug logging
+logging.getLogger("apscheduler").setLevel(logging.DEBUG)
+
 logger = logging.getLogger(__name__)
 
 # Conversation states
@@ -35,6 +67,9 @@ WAITING_FOR_EDIT_TIME = 7
 WAITING_FOR_BATCH_TEXT = 8
 WAITING_FOR_BATCH_TIME = 9
 WAITING_FOR_BATCH_FREQUENCY = 10
+
+# Timezone
+TZ = ZoneInfo("Europe/Kyiv")
 
 # Display limits
 MAX_PREVIEW_LENGTH = 50
@@ -206,10 +241,12 @@ async def receive_frequency(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         freq_display = "Daily"
     else:
-        now = datetime.now()
+        now = datetime.now(TZ)
         target = now.replace(hour=post_time.hour, minute=post_time.minute, second=0, microsecond=0)
         if target <= now:
             target += timedelta(days=1)
+
+        logger.info(f"DEBUG: now={now}, target={target}, diff={(target-now).total_seconds()}s")
 
         context.job_queue.run_once(
             send_scheduled_post_once,
@@ -260,6 +297,7 @@ async def send_scheduled_post(context: ContextTypes.DEFAULT_TYPE):
 
 async def send_scheduled_post_once(context: ContextTypes.DEFAULT_TYPE):
     """Send the scheduled post to the channel (once) and remove from list."""
+    logger.info("DEBUG: send_scheduled_post_once called!")
     job_data = context.job.data
     try:
         await context.bot.send_message(
@@ -525,7 +563,7 @@ async def receive_edit_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
             name=job_name,
         )
     else:
-        now = datetime.now()
+        now = datetime.now(TZ)
         target = now.replace(hour=post_time.hour, minute=post_time.minute, second=0, microsecond=0)
         if target <= now:
             target += timedelta(days=1)
@@ -666,7 +704,7 @@ async def receive_batch_frequency(update: Update, context: ContextTypes.DEFAULT_
                 name=job_name,
             )
         else:
-            now = datetime.now()
+            now = datetime.now(TZ)
             target = now.replace(hour=post_time.hour, minute=post_time.minute, second=0, microsecond=0)
             if target <= now:
                 target += timedelta(days=1)
@@ -764,7 +802,9 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Run the bot."""
-    application = Application.builder().token(settings.BOT_TOKEN).build()
+    # Use Kyiv timezone for scheduling
+    defaults = Defaults(tzinfo=ZoneInfo("Europe/Kyiv"))
+    application = Application.builder().token(settings.BOT_TOKEN).defaults(defaults).build()
 
     schedule_handler = ConversationHandler(
         entry_points=[CommandHandler('schedule', schedule_start)],
