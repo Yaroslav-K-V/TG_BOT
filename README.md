@@ -5,11 +5,14 @@ A Telegram bot that allows users to schedule posts to channels and groups.
 ## Features
 
 - Schedule posts for one-time or daily delivery
+- **Batch scheduling** - schedule multiple posts at once
+- **Edit scheduled posts** - modify text or time without deleting
 - Works in **private chats**, **public groups**, and **private groups**
 - In private chat: posts to the configured channel
 - In groups: posts directly to that group
 - View and manage scheduled posts
 - Daily welcome message on first interaction
+- **Admin dashboard** - stats for bot owner
 
 ## Commands
 
@@ -17,8 +20,11 @@ A Telegram bot that allows users to schedule posts to channels and groups.
 |---------|-------------|
 | `/start` | Show welcome message and help |
 | `/schedule` | Schedule a new post |
+| `/batch` | Schedule multiple posts at once |
 | `/list` | View your scheduled posts |
+| `/edit` | Edit a scheduled post (text or time) |
 | `/delete` | Delete a scheduled post |
+| `/admin` | Admin dashboard (owner only) |
 | `/cancel` | Cancel current operation |
 
 ## Usage
@@ -104,6 +110,7 @@ TG_BOT/
 |----------|----------|-------------|
 | `BOT_TOKEN` | Yes | Telegram bot token from BotFather |
 | `CHANNEL_ID` | Yes | Default channel (`@name` or numeric ID) |
+| `ADMIN_ID` | No | Your Telegram user ID for `/admin` command |
 | `LOG_LEVEL` | No | Logging level (default: `INFO`) |
 
 ## Requirements
